@@ -1,0 +1,106 @@
+version: "3.9"
+
+# Local development stack for realtime-fraud-detection
+# Spins up: Kafka (KRaft mode) + Prometheus + Grafana
+# Spark runs locally via spark-submit (not containerised — uses local PySpark install)
+
+services:
+
+  # ── Kafka (KRaft — no Zookeeper dependency) ───────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: fraud-kafka
+    ports:
+      - "9092:9092"
+      - "9101:9101"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk  # Fixed cluster ID for local dev
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"    # Create topics explicitly
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+    healthcheck:
+      test: kafka-topics --bootstrap-server localhost:9092 --list
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Topic initialisation ──────────────────────────────────────────────────
+  kafka-setup:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: fraud-kafka-setup
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: |
+      bash -c "
+        echo 'Creating Kafka topics...'
+
+        kafka-topics --create --if-not-exists \
+          --bootstrap-server kafka:29092 \
+          --topic txn.raw \
+          --partitions 8 \
+          --replication-factor 1 \
+          --config retention.ms=86400000 \
+          --config max.message.bytes=1048576
+
+        kafka-topics --create --if-not-exists \
+          --bootstrap-server kafka:29092 \
+          --topic txn.flagged \
+          --partitions 4 \
+          --replication-factor 1 \
+          --config retention.ms=604800000
+
+        echo 'Topics created:'
+        kafka-topics --bootstrap-server kafka:29092 --list
+      "
+    restart: "no"
+
+  # ── Prometheus — scrapes Spark JMX metrics ────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: fraud-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+
+  # ── Grafana — fraud operations dashboard ──────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: fraud-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/fraud_dashboard.json
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  kafka-data:
+  grafana-data:
+
+networks:
+  default:
+    name: fraud-detection-network
