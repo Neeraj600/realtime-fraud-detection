@@ -18,6 +18,7 @@ Payment fraud costs financial services companies billions annually. Batch-based 
 ---
 
 ## Architecture
+<img width="945" height="618" alt="architecture" src="https://github.com/user-attachments/assets/1e000c2e-0380-4283-803b-cdd2816fed45" />
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
